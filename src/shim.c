@@ -135,6 +135,7 @@ static struct {
 static int is_pico8;
 /* a key pico-8 must not see, the Mini's Menu, which its SDL sends as Escape */
 static int hidden_scancode = -1;
+static void release_hidden_key(void);
 /* PICO8_IGM_DEBUG: what pico-8 reads of the keyboard, to Saves/spruce/pico8-igm-debug.log */
 static FILE *debug_log;
 
