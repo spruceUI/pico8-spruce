@@ -125,11 +125,65 @@ static struct {
   void (*UnlockAudioDevice)(uint32_t);
   void (*Delay)(uint32_t);
   const char *(*GetError)(void);
+  int (*PeepEvents)(void *, int, int, uint32_t, uint32_t);
+  int (*WaitEvent)(void *);
+  int (*WaitEventTimeout)(void *, int);
+  const uint8_t *(*GetKeyboardState)(int *);
 } sdl;
 
 static int is_pico8;
 /* a key pico-8 must not see, the Mini's Menu, which its SDL sends as Escape */
 static int hidden_scancode = -1;
+/* PICO8_IGM_DEBUG: what pico-8 reads of the keyboard, to Saves/spruce/pico8-igm-debug.log */
+static FILE *debug_log;
+
+static void debug(const char *format, ...) __attribute__((format(printf, 1, 2)));
+static void debug(const char *format, ...)
+{
+  va_list args;
+
+  if (debug_log == NULL) {
+    return;
+  }
+  fprintf(debug_log, "%u ", sdl.GetTicks != NULL ? sdl.GetTicks() : 0);
+  va_start(args, format);
+  vfprintf(debug_log, format, args);
+  va_end(args);
+  fflush(debug_log);
+}
+
+static void debug_key_event(const char *from, const void *event, int hidden)
+{
+  uint32_t type = *(const uint32_t *)event;
+  int32_t scancode, sym;
+
+  if (debug_log == NULL || (type != SDL_KEYDOWN && type != SDL_KEYUP)) {
+    return;
+  }
+  memcpy(&scancode, (const unsigned char *)event + 16, sizeof scancode);
+  memcpy(&sym, (const unsigned char *)event + 20, sizeof sym);
+  debug("%s %s scancode %d sym %d%s\n", from, type == SDL_KEYDOWN ? "down" : "up", scancode, sym,
+        hidden ? " (hidden)" : "");
+}
+
+/* the keyboard state pico-8 could poll, logged as it changes */
+static void debug_keyboard_state(void)
+{
+  static uint8_t last[512];
+  const uint8_t *now;
+  int count = 0, i;
+
+  if (debug_log == NULL || sdl.GetKeyboardState == NULL) {
+    return;
+  }
+  now = sdl.GetKeyboardState(&count);
+  for (i = 0; now != NULL && i < count && i < 512; i++) {
+    if (now[i] != last[i]) {
+      debug("keyboard state scancode %d %s\n", i, now[i] ? "down" : "up");
+      last[i] = now[i];
+    }
+  }
+}
 static volatile sig_atomic_t menu_requests, terminating;
 static sig_atomic_t menu_seen;
 static int quitting;
@@ -182,6 +236,10 @@ static int resolve_sdl(void)
   RESOLVE(UnlockAudioDevice);
   RESOLVE(Delay);
   RESOLVE(GetError);
+  RESOLVE(PeepEvents);
+  RESOLVE(WaitEvent);
+  RESOLVE(WaitEventTimeout);
+  RESOLVE(GetKeyboardState);
 
   sdl.resolved = sdl.RenderPresent && sdl.GetTicks && sdl.PollEvent && sdl.PushEvent &&
                          sdl.GetRendererOutputSize && sdl.RenderReadPixels && sdl.CreateTexture &&
@@ -1020,6 +1078,10 @@ __attribute__((constructor)) static void shim_init(void)
   if (getenv("PICO8_IGM_HIDE_SCANCODE") != NULL) {
     hidden_scancode = atoi(getenv("PICO8_IGM_HIDE_SCANCODE"));
   }
+  if (getenv("PICO8_IGM_DEBUG") != NULL) {
+    debug_log = fopen("/mnt/SDCARD/Saves/spruce/pico8-igm-debug.log", "a");
+    debug("started, hiding scancode %d\n", hidden_scancode);
+  }
   states_dir = getenv("PICO_PAK_STATES_DIR");
   cart = getenv("PICO8_IGM_CART");
   if (cart != NULL && strrchr(cart, '/') != NULL) {
@@ -1125,7 +1187,9 @@ EXPORT void SDL_RenderPresent(void *renderer)
   }
 
   continue_keys();
+  debug_keyboard_state();
   if (menu_requests != menu_seen) {
+    debug("menu requested\n");
     menu_seen = menu_requests;
     run_menu(renderer);
     if (quitting) {
@@ -1156,13 +1220,65 @@ EXPORT int SDL_PollEvent(void *event)
     return 0;
   }
   /* a NULL event only asks whether one is waiting, so nothing can be dropped */
-  if (!is_pico8 || hidden_scancode < 0 || event == NULL) {
+  if (!is_pico8 || event == NULL || (hidden_scancode < 0 && debug_log == NULL)) {
     return sdl.PollEvent(event);
   }
-  do {
+  for (;;) {
     got = sdl.PollEvent(event);
-  } while (got && is_hidden_key(event));
+    if (!got) {
+      return 0;
+    }
+    debug_key_event("PollEvent", event, is_hidden_key(event));
+    if (!is_hidden_key(event)) {
+      return got;
+    }
+  }
+}
+
+EXPORT int SDL_PeepEvents(void *events, int count, int action, uint32_t min_type, uint32_t max_type)
+{
+  static int seen;
+
+  resolve_sdl();
+  if (!seen++) {
+    debug("pico-8 calls SDL_PeepEvents (action %d)\n", action);
+  }
+  return sdl.PeepEvents != NULL ? sdl.PeepEvents(events, count, action, min_type, max_type) : -1;
+}
+
+EXPORT int SDL_WaitEvent(void *event)
+{
+  int got;
+
+  resolve_sdl();
+  got = sdl.WaitEvent != NULL ? sdl.WaitEvent(event) : 0;
+  if (got && event != NULL) {
+    debug_key_event("WaitEvent", event, 0);
+  }
   return got;
+}
+
+EXPORT int SDL_WaitEventTimeout(void *event, int timeout)
+{
+  int got;
+
+  resolve_sdl();
+  got = sdl.WaitEventTimeout != NULL ? sdl.WaitEventTimeout(event, timeout) : 0;
+  if (got && event != NULL) {
+    debug_key_event("WaitEventTimeout", event, 0);
+  }
+  return got;
+}
+
+EXPORT const uint8_t *SDL_GetKeyboardState(int *count)
+{
+  static int seen;
+
+  resolve_sdl();
+  if (!seen++) {
+    debug("pico-8 calls SDL_GetKeyboardState\n");
+  }
+  return sdl.GetKeyboardState != NULL ? sdl.GetKeyboardState(count) : NULL;
 }
 
 /* pico-8's clock, without the time the menu was open, and carried on from a loaded state */
