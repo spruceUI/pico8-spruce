@@ -13,6 +13,7 @@ A library preloaded into native PICO-8 on spruceOS that adds the spruce in-game 
 | `PICO8_IGM_CART` | the cart being run, for state names |
 | `EVENT_PATH_READ_INPUTS_SPRUCE`, `B_UP` ... `B_B` | the pad, as the platform `.cfg` exports them |
 | `PICO8_IGM_INPUT`, `PICO8_IGM_B_*` | override the two above |
+| `PICO8_IGM_HIDE_SCANCODE` | an SDL scancode kept from pico-8, for a Menu button its SDL sends as a key |
 | `SPRUCE_THEME_DIR` | a theme's own `igm.json` |
 | `DISPLAY_ROTATION` | which way a portrait panel turns |
 

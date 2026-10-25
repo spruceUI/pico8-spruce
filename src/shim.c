@@ -128,6 +128,8 @@ static struct {
 } sdl;
 
 static int is_pico8;
+/* a key pico-8 must not see, the Mini's Menu, which its SDL sends as Escape */
+static int hidden_scancode = -1;
 static volatile sig_atomic_t menu_requests, terminating;
 static sig_atomic_t menu_seen;
 static int quitting;
@@ -1015,6 +1017,9 @@ __attribute__((constructor)) static void shim_init(void)
   action.sa_handler = on_terminate;
   sigaction(SIGTERM, &action, NULL);
 
+  if (getenv("PICO8_IGM_HIDE_SCANCODE") != NULL) {
+    hidden_scancode = atoi(getenv("PICO8_IGM_HIDE_SCANCODE"));
+  }
   states_dir = getenv("PICO_PAK_STATES_DIR");
   cart = getenv("PICO8_IGM_CART");
   if (cart != NULL && strrchr(cart, '/') != NULL) {
@@ -1128,6 +1133,36 @@ EXPORT void SDL_RenderPresent(void *renderer)
     }
   }
   sdl.RenderPresent(renderer);
+}
+
+static int is_hidden_key(const void *event)
+{
+  uint32_t type = *(const uint32_t *)event;
+  int32_t scancode;
+
+  if (type != SDL_KEYDOWN && type != SDL_KEYUP) {
+    return 0;
+  }
+  memcpy(&scancode, (const unsigned char *)event + 16, sizeof scancode);
+  return scancode == hidden_scancode;
+}
+
+EXPORT int SDL_PollEvent(void *event)
+{
+  int got;
+
+  resolve_sdl();
+  if (sdl.PollEvent == NULL) {
+    return 0;
+  }
+  /* a NULL event only asks whether one is waiting, so nothing can be dropped */
+  if (!is_pico8 || hidden_scancode < 0 || event == NULL) {
+    return sdl.PollEvent(event);
+  }
+  do {
+    got = sdl.PollEvent(event);
+  } while (got && is_hidden_key(event));
+  return got;
 }
 
 /* pico-8's clock, without the time the menu was open, and carried on from a loaded state */

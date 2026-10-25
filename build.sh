@@ -33,7 +33,7 @@ newest=$(readelf -V "$OUT" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -
 echo "newest glibc symbol: $newest (allowed $GLIBC_MAX)"
 [ "$(printf '%s\n%s\n' "$newest" "$GLIBC_MAX" | sort -t. -k1,1n -k2,2n | tail -1)" = "$GLIBC_MAX" ]
 if readelf -d "$OUT" | grep -q 'libm\.so'; then echo "links libm"; exit 1; fi
-for sym in SDL_RenderPresent SDL_GetTicks SDL_GetModState SDL_OpenAudio SDL_OpenAudioDevice \
+for sym in SDL_RenderPresent SDL_PollEvent SDL_GetTicks SDL_GetModState SDL_OpenAudio SDL_OpenAudioDevice \
     malloc calloc realloc free; do
     readelf -W --dyn-syms "$OUT" | grep -Eq " FUNC +GLOBAL +DEFAULT +[0-9]+ $sym$" || { echo "missing $sym"; exit 1; }
 done
