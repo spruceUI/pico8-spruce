@@ -979,7 +979,7 @@ struct page_stream {
   size_t chunk_size, chunk_at;
 };
 
-static int next_chunk(struct page_stream *stream)
+static int stream_chunk(struct page_stream *stream)
 {
   uint32_t sizes[2];
   size_t n;
@@ -1013,7 +1013,7 @@ static int stream_read(struct page_stream *stream, unsigned char *to, size_t siz
   while (size > 0) {
     size_t n;
 
-    if (stream->chunk_at == stream->chunk_size && !next_chunk(stream)) {
+    if (stream->chunk_at == stream->chunk_size && !stream_chunk(stream)) {
       return 0;
     }
     n = stream->chunk_size - stream->chunk_at;
