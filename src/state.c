@@ -399,6 +399,7 @@ static void start_without_randomising(void)
   int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
   char *arguments = __libc_malloc(65536);
   char **argv;
+  char exe[4096];
   ssize_t got = 0, n;
   int count = 0, i;
   unsigned current = (unsigned)personality(0xffffffff);
@@ -432,8 +433,11 @@ static void start_without_randomising(void)
   if (personality(current | ADDR_NO_RANDOMIZE) == -1) {
     LOG("cannot turn address randomising off, a state will only load in this run of pico-8\n");
   } else {
+    /* by its own path, as exec names the process after the file, and killall finds it by name */
+    n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    exe[n > 0 ? n : 0] = '\0';
     LOG("starting pico-8 again with address randomising off, for save states\n");
-    execv("/proc/self/exe", argv);
+    execv(n > 0 ? exe : "/proc/self/exe", argv);
     LOG("cannot start pico-8 again, a state will only load in this run of pico-8\n");
     personality(current);
   }
