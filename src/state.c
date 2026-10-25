@@ -110,13 +110,24 @@ struct range {
 
 /*
  * pico-8's settings and screen setup, which stay this run's through a load, so
- * a state saved on one device puts the game back on another without its screen
+ * a state saved on one device puts the game back on another without its screen.
+ * A part of a symbol is its offsets from lo up to hi; hi 0 is the whole symbol.
+ * app's are the words pico8_load_config and pico8_save_config read and write,
+ * transform_screen among them at 0x538, the same in pico8_dyn and pico8_64.
  */
-static const char *const device_names[] = {
-    "cconfig",       "pconfig",       "codo_screen_actual", "codo_screen_mode",
-    "codo_ctx_display", "desktop_w",   "desktop_h",          "desktop_d",
-    "sdl_texture_w", "sdl_texture_h", "scale_mask",         "scale_pos",
-    "last_fullscreen", "sdl_window_display",
+static const struct {
+  const char *name;
+  uint32_t lo, hi;
+} device_names[] = {
+    {"cconfig", 0, 0},          {"pconfig", 0, 0},       {"codo_screen_actual", 0, 0},
+    {"codo_screen_mode", 0, 0}, {"codo_ctx_display", 0, 0}, {"desktop_w", 0, 0},
+    {"desktop_h", 0, 0},        {"desktop_d", 0, 0},     {"sdl_texture_w", 0, 0},
+    {"sdl_texture_h", 0, 0},    {"scale_mask", 0, 0},    {"scale_pos", 0, 0},
+    {"last_fullscreen", 0, 0},  {"sdl_window_display", 0, 0},
+    {"app", 0x518, 0x524},      {"app", 0x534, 0x554},   {"app", 0x558, 0x55c},
+    {"app", 0x564, 0x568},      {"app", 0x65c, 0x674},   {"app", 0x678, 0x684},
+    {"app", 0x688, 0x690},      {"app", 0x694, 0x698},   {"app", 0x69c, 0x6a0},
+    {"app", 0x6a4, 0x6ac},
 };
 #define DEVICE_NAMES (sizeof device_names / sizeof *device_names)
 static struct range device_vars[DEVICE_NAMES];
@@ -327,14 +338,15 @@ static int read_symbols(void)
           cart_lua = at;
         } else if (strcmp(symbol, "num_threads") == 0 && symbols[s].st_size == sizeof(int)) {
           download_threads = at;
-        } else if (symbols[s].st_size > 0 && device_var_count < DEVICE_NAMES) {
+        } else if (symbols[s].st_size > 0) {
           size_t d;
 
-          for (d = 0; d < DEVICE_NAMES; d++) {
-            if (strcmp(symbol, device_names[d]) == 0) {
-              device_vars[device_var_count].lo = at;
-              device_vars[device_var_count++].hi = at + symbols[s].st_size;
-              break;
+          for (d = 0; d < DEVICE_NAMES && device_var_count < DEVICE_NAMES; d++) {
+            uint32_t hi = device_names[d].hi != 0 ? device_names[d].hi : symbols[s].st_size;
+
+            if (strcmp(symbol, device_names[d].name) == 0 && hi <= symbols[s].st_size) {
+              device_vars[device_var_count].lo = at + device_names[d].lo;
+              device_vars[device_var_count++].hi = at + hi;
             }
           }
         }
