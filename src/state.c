@@ -1147,15 +1147,16 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
 /*
  * A position-independent pico-8 sits wherever each kernel puts it, so a state
  * from another device holds pointers into its image at the old address, which
- * are moved to where it is now. A number that only looks like such a pointer
- * would be moved too, but in 64 bits nothing else falls in that range.
+ * are moved to where it is now. Some sit in packed structures, four bytes off
+ * a word, so every four bytes is looked at. A number that only looks like such
+ * a pointer would be moved too, but in 64 bits nothing else falls in that range.
  */
 static size_t rebase(unsigned char *at, size_t size, uintptr_t old_lo, uintptr_t old_hi,
                      uintptr_t shift)
 {
-  size_t offset, moved = 0;
+  size_t offset = 0, moved = 0;
 
-  for (offset = 0; offset + sizeof(uintptr_t) <= size; offset += sizeof(uintptr_t)) {
+  while (offset + sizeof(uintptr_t) <= size) {
     uintptr_t word;
 
     memcpy(&word, at + offset, sizeof word);
@@ -1163,6 +1164,9 @@ static size_t rebase(unsigned char *at, size_t size, uintptr_t old_lo, uintptr_t
       word += shift;
       memcpy(at + offset, &word, sizeof word);
       moved++;
+      offset += sizeof word;
+    } else {
+      offset += 4;
     }
   }
   return moved;
