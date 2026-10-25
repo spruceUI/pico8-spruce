@@ -3,7 +3,8 @@
  *
  * From josegonzalez/minui-pico-8-pak. Changed for spruce: a load unpacks the
  * file a chunk at a time, as a whole file's pages at once did not fit in the
- * Miyoo Mini's memory.
+ * Miyoo Mini's memory, and keeps this run's settings and screen setup, so one
+ * card's states load on any device running the same pico-8.
  */
 
 #define _GNU_SOURCE
@@ -106,6 +107,32 @@ static int arena_full;
 struct range {
   uint64_t lo, hi;
 };
+
+/*
+ * pico-8's settings and screen setup, which stay this run's through a load, so
+ * a state saved on one device puts the game back on another without its screen
+ */
+static const char *const device_names[] = {
+    "cconfig",       "pconfig",       "codo_screen_actual", "codo_screen_mode",
+    "codo_ctx_display", "desktop_w",   "desktop_h",          "desktop_d",
+    "sdl_texture_w", "sdl_texture_h", "scale_mask",         "scale_pos",
+    "last_fullscreen", "sdl_window_display",
+};
+#define DEVICE_NAMES (sizeof device_names / sizeof *device_names)
+static struct range device_vars[DEVICE_NAMES];
+static size_t device_var_count;
+
+static int is_device_var(uintptr_t at)
+{
+  size_t i;
+
+  for (i = 0; i < device_var_count; i++) {
+    if (at >= device_vars[i].lo && at < device_vars[i].hi) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 /*
  * The big blocks pico-8 allocates before its cart starts, such as the 8.6MB it
@@ -300,6 +327,16 @@ static int read_symbols(void)
           cart_lua = at;
         } else if (strcmp(symbol, "num_threads") == 0 && symbols[s].st_size == sizeof(int)) {
           download_threads = at;
+        } else if (symbols[s].st_size > 0 && device_var_count < DEVICE_NAMES) {
+          size_t d;
+
+          for (d = 0; d < DEVICE_NAMES; d++) {
+            if (strcmp(symbol, device_names[d]) == 0) {
+              device_vars[device_var_count].lo = at;
+              device_vars[device_var_count++].hi = at + symbols[s].st_size;
+              break;
+            }
+          }
         }
       }
       __libc_free(symbols);
@@ -1091,7 +1128,7 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
 static void put_back_data(const unsigned char *saved, const struct range *old_ranges,
                           uint64_t old_count, const struct range *ranges, uint64_t count)
 {
-  size_t offset, size = data_hi - data_lo, kept = 0;
+  size_t offset, size = data_hi - data_lo, kept = 0, settings = 0;
 
   for (offset = 0; offset + sizeof(uintptr_t) <= size; offset += sizeof(uintptr_t)) {
     uintptr_t at = data_lo + offset, was, now;
@@ -1099,6 +1136,10 @@ static void put_back_data(const unsigned char *saved, const struct range *old_ra
     memcpy(&was, saved + offset, sizeof was);
     memcpy(&now, (const void *)at, sizeof now);
     if (at >= got_lo && at < got_hi) {
+      continue;
+    }
+    if (is_device_var(at)) {
+      settings++;
       continue;
     }
     if ((at < machine_lo || at >= machine_hi) && is_foreign(was, old_ranges, old_count) &&
@@ -1110,7 +1151,8 @@ static void put_back_data(const unsigned char *saved, const struct range *old_ra
   }
   /* the bytes after the last whole word */
   memcpy((void *)(data_lo + offset), saved + offset, size - offset);
-  LOG("kept %zu of pico-8's pointers to this run's libraries\n", kept);
+  LOG("kept %zu of pico-8's pointers to this run's libraries, and %zu words of %zu settings\n",
+      kept, settings, device_var_count);
 }
 
 int state_load(const char *path, const char *cart, uint32_t *ticks)

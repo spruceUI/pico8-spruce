@@ -191,12 +191,6 @@ static sig_atomic_t menu_seen;
 static int quitting;
 
 static const char *states_dir, *cart;
-/*
- * What a state is checked against before it loads: the cart and, from
- * PICO8_IGM_STATE_KEY, the screen it was drawn for. A state holds pico-8's
- * screen setup, so one from another screen would put that one back.
- */
-static char state_id[1024];
 static int slot;
 static int32_t tick_offset;
 static uint32_t audio_device;
@@ -697,7 +691,7 @@ static int save_slot(int which, const uint32_t *frame, int w, int h, int backgro
   make_dirs(states_dir);
 
   hold_audio(1);
-  snapshot = state_capture(state_id, real_ticks() + (uint32_t)tick_offset);
+  snapshot = state_capture(cart, real_ticks() + (uint32_t)tick_offset);
   hold_audio(0);
   if (snapshot == NULL) {
     LOG("cannot copy pico-8's memory, not saving %s\n", path);
@@ -745,7 +739,7 @@ static int load_slot(int which)
     return 0;
   }
   hold_audio(1);
-  loaded = state_load(path, state_id, &ticks);
+  loaded = state_load(path, cart, &ticks);
   if (loaded) {
     tick_offset = (int32_t)(ticks - real_ticks());
   }
@@ -1098,11 +1092,6 @@ __attribute__((constructor)) static void shim_init(void)
   cart = getenv("PICO8_IGM_CART");
   if (cart != NULL && strrchr(cart, '/') != NULL) {
     cart = strrchr(cart, '/') + 1;
-  }
-  if (cart != NULL) {
-    const char *key = getenv("PICO8_IGM_STATE_KEY");
-
-    snprintf(state_id, sizeof state_id, "%s%s%s", cart, key != NULL ? "|" : "", key != NULL ? key : "");
   }
   load_pad();
 }
