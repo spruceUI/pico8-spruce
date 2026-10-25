@@ -1011,6 +1011,16 @@ static void run_menu(void *renderer)
   menu_seen = menu_requests;
   LOG("menu closed\n");
 
+  if (action == IGM_EXIT) {
+    exit_game(frame, lw, lh);
+  }
+  /* the menu's memory goes first: a load stages a copy of pico-8's, and the Mini has little to spare */
+  forget_preview();
+  igm_release();
+  free(out);
+  free(frame);
+  free(drawn);
+
   switch (action) {
   case IGM_LOAD:
     if (load_slot(slot)) {
@@ -1023,17 +1033,10 @@ static void run_menu(void *renderer)
   case IGM_PICO8:
     open_pico8_menu();
     break;
-  case IGM_EXIT:
-    exit_game(frame, lw, lh);
-    break;
   }
   if (paused && !quitting) {
     sdl.PauseAudioDevice(audio_device, 0);
   }
-  forget_preview();
-  free(out);
-  free(frame);
-  free(drawn);
 }
 
 /* ---- startup and shutdown ---- */

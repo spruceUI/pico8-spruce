@@ -666,6 +666,12 @@ static int open_font(const igm_theme *t)
   return font.ok;
 }
 
+void igm_release(void)
+{
+  free(font.data);
+  memset(&font, 0, sizeof font);
+}
+
 static unsigned next_codepoint(const char **text)
 {
   const unsigned char *s = (const unsigned char *)*text;

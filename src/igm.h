@@ -60,4 +60,7 @@ const igm_theme *igm_theme_get(void);
 void igm_draw(igm_canvas *canvas, const uint32_t *frame, int selected, int slot, int battery,
               const igm_image *preview);
 
+/* lets go of the font, which is read again when the menu next opens */
+void igm_release(void);
+
 #endif

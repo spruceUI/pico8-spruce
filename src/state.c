@@ -1,5 +1,9 @@
 /*
  * Save states. See state.h.
+ *
+ * From josegonzalez/minui-pico-8-pak. Changed for spruce: a load unpacks the
+ * file a chunk at a time, as a whole file's pages at once did not fit in the
+ * Miyoo Mini's memory.
  */
 
 #define _GNU_SOURCE
@@ -967,36 +971,59 @@ static const unsigned char *kept_source(const struct state_kept *kept, const uns
   return NULL;
 }
 
-/* the pages in the file, unpacked one chunk after another into stored */
-static int unpack(const unsigned char *packed, size_t packed_size, unsigned char *stored,
-                  size_t stored_size)
-{
-  size_t in = 0, out = 0;
-  uint32_t sizes[2];
+/* the pages in the file, unpacked a chunk at a time, so a load holds no more than one of them */
+struct page_stream {
+  FILE *file;
+  uint64_t packed_left;
+  unsigned char *chunk, *packed;
+  size_t chunk_size, chunk_at;
+};
 
-  while (in < packed_size) {
-    if (packed_size - in < sizeof sizes) {
-      return 0;
-    }
-    memcpy(sizes, packed + in, sizeof sizes);
-    in += sizeof sizes;
-    if (sizes[0] > CHUNK || sizes[0] > stored_size - out ||
-        (sizes[1] != 0 ? sizes[1] : sizes[0]) > packed_size - in) {
-      return 0;
-    }
-    if (sizes[1] == 0) {
-      memcpy(stored + out, packed + in, sizes[0]);
-      in += sizes[0];
-    } else {
-      if (LZ4_decompress_safe((const char *)packed + in, (char *)stored + out, (int)sizes[1],
-                              (int)sizes[0]) != (int)sizes[0]) {
-        return 0;
-      }
-      in += sizes[1];
-    }
-    out += sizes[0];
+static int next_chunk(struct page_stream *stream)
+{
+  uint32_t sizes[2];
+  size_t n;
+
+  if (stream->packed_left < sizeof sizes || fread(sizes, sizeof sizes, 1, stream->file) != 1) {
+    return 0;
   }
-  return out == stored_size;
+  stream->packed_left -= sizeof sizes;
+  n = sizes[1] != 0 ? sizes[1] : sizes[0];
+  if (sizes[0] == 0 || sizes[0] > CHUNK || n > stream->packed_left ||
+      n > (size_t)LZ4_compressBound(CHUNK)) {
+    return 0;
+  }
+  if (sizes[1] == 0) {
+    if (fread(stream->chunk, 1, sizes[0], stream->file) != sizes[0]) {
+      return 0;
+    }
+  } else if (fread(stream->packed, 1, sizes[1], stream->file) != sizes[1] ||
+             LZ4_decompress_safe((const char *)stream->packed, (char *)stream->chunk, (int)sizes[1],
+                                 (int)sizes[0]) != (int)sizes[0]) {
+    return 0;
+  }
+  stream->packed_left -= n;
+  stream->chunk_size = sizes[0];
+  stream->chunk_at = 0;
+  return 1;
+}
+
+static int stream_read(struct page_stream *stream, unsigned char *to, size_t size)
+{
+  while (size > 0) {
+    size_t n;
+
+    if (stream->chunk_at == stream->chunk_size && !next_chunk(stream)) {
+      return 0;
+    }
+    n = stream->chunk_size - stream->chunk_at;
+    n = n < size ? n : size;
+    memcpy(to, stream->chunk + stream->chunk_at, n);
+    stream->chunk_at += n;
+    to += n;
+    size -= n;
+  }
+  return 1;
 }
 
 static int read_pages(FILE *file, const struct state_header *header, unsigned char **into,
@@ -1004,7 +1031,8 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
                       const unsigned char *const *sources, uint64_t kept_count)
 {
   size_t total = 0, page, at = 0, used = 0;
-  unsigned char *flags, *packed = NULL, *stored = NULL;
+  struct page_stream stream;
+  unsigned char *flags;
   int r, ok;
 
   for (r = 0; r < count; r++) {
@@ -1014,13 +1042,14 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
       header->packed_size > header->stored_size + header->stored_size / 8 + 65536) {
     return 0;
   }
+  memset(&stream, 0, sizeof stream);
+  stream.file = file;
+  stream.packed_left = header->packed_size;
+  stream.chunk = __libc_malloc(CHUNK);
+  stream.packed = __libc_malloc((size_t)LZ4_compressBound(CHUNK));
   flags = __libc_malloc(total);
-  packed = __libc_malloc(header->packed_size + 1);
-  stored = __libc_malloc(header->stored_size + 1);
-  ok = flags != NULL && packed != NULL && stored != NULL && fread(flags, 1, total, file) == total &&
-       fread(packed, 1, header->packed_size, file) == header->packed_size &&
-       unpack(packed, header->packed_size, stored, header->stored_size);
-  __libc_free(packed);
+  ok = flags != NULL && stream.chunk != NULL && stream.packed != NULL &&
+       fread(flags, 1, total, file) == total;
   for (r = 0; ok && r < count; r++) {
     for (page = 0; ok && page * PAGE < sizes[r]; page++) {
       size_t size = page_size_at(sizes[r], page);
@@ -1028,11 +1057,8 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
 
       switch (flags[at++]) {
       case PAGE_STORED:
-        ok = size <= header->stored_size - used;
-        if (ok) {
-          memcpy(to, stored + used, size);
-          used += size;
-        }
+        ok = size <= header->stored_size - used && stream_read(&stream, to, size);
+        used += size;
         break;
       case PAGE_KEPT: {
         const unsigned char *from =
@@ -1051,8 +1077,10 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
     }
   }
   __libc_free(flags);
-  __libc_free(stored);
-  return ok && used == header->stored_size;
+  __libc_free(stream.chunk);
+  __libc_free(stream.packed);
+  return ok && used == header->stored_size && stream.packed_left == 0 &&
+         stream.chunk_at == stream.chunk_size;
 }
 
 /*
