@@ -20,6 +20,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <link.h>
 #include <linux/input.h>
 #include <pthread.h>
 #include <signal.h>
@@ -29,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include "gfx.h"
@@ -1041,6 +1043,49 @@ static void run_menu(void *renderer)
 
 /* ---- startup and shutdown ---- */
 
+/* where pico-8's image starts, so a crash is logged at offsets that match its symbols */
+static uintptr_t pico8_base;
+
+static int first_object(struct dl_phdr_info *info, size_t size, void *data)
+{
+  (void)size;
+  (void)data;
+  pico8_base = info->dlpi_addr;
+  return 1;
+}
+
+/* logs where pico-8 crashed and lets it crash as it would have, the handler being reset */
+static void on_crash(int signal, siginfo_t *info, void *context)
+{
+  ucontext_t *uc = context;
+  uintptr_t pc, lr;
+  char line[256];
+  int n;
+
+#if defined(__aarch64__)
+  pc = (uintptr_t)uc->uc_mcontext.pc;
+  lr = (uintptr_t)uc->uc_mcontext.regs[30];
+#elif defined(__arm__)
+  pc = (uintptr_t)uc->uc_mcontext.arm_pc;
+  lr = (uintptr_t)uc->uc_mcontext.arm_lr;
+#else
+  pc = lr = 0;
+  (void)uc;
+#endif
+  n = snprintf(line, sizeof line,
+               "pico8-igm: signal %d at address %p, pc %#lx (pico-8 +%#lx), lr %#lx (pico-8 +%#lx)\n",
+               signal, info->si_addr, (unsigned long)pc, (unsigned long)(pc - pico8_base),
+               (unsigned long)lr, (unsigned long)(lr - pico8_base));
+  if (n > 0) {
+    ssize_t written = write(2, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    (void)written;
+  }
+  if (debug_log != NULL) {
+    fputs(line, debug_log);
+    fflush(debug_log);
+  }
+}
+
 static void on_menu(int signal)
 {
   (void)signal;
@@ -1080,6 +1125,14 @@ __attribute__((constructor)) static void shim_init(void)
   sigaction(SIGUSR2, &action, NULL);
   action.sa_handler = on_terminate;
   sigaction(SIGTERM, &action, NULL);
+
+  dl_iterate_phdr(first_object, NULL);
+  action.sa_handler = NULL;
+  action.sa_sigaction = on_crash;
+  action.sa_flags = SA_SIGINFO | SA_RESETHAND;
+  sigaction(SIGSEGV, &action, NULL);
+  sigaction(SIGBUS, &action, NULL);
+  sigaction(SIGILL, &action, NULL);
 
   if (getenv("PICO8_IGM_HIDE_SCANCODE") != NULL) {
     hidden_scancode = atoi(getenv("PICO8_IGM_HIDE_SCANCODE"));

@@ -1174,9 +1174,10 @@ static size_t rebase(unsigned char *at, size_t size, uintptr_t old_lo, uintptr_t
  * saved one only a number that happened to look like one.
  */
 static void put_back_data(const unsigned char *saved, const struct range *old_ranges,
-                          uint64_t old_count, const struct range *ranges, uint64_t count)
+                          uint64_t old_count, const struct range *ranges, uint64_t count,
+                          uintptr_t shift)
 {
-  size_t offset, size = data_hi - data_lo, kept = 0, settings = 0;
+  size_t offset, size = data_hi - data_lo, kept = 0, settings = 0, moved = 0;
 
   for (offset = 0; offset + sizeof(uintptr_t) <= size; offset += sizeof(uintptr_t)) {
     uintptr_t at = data_lo + offset, was, now;
@@ -1195,7 +1196,16 @@ static void put_back_data(const unsigned char *saved, const struct range *old_ra
       kept++;
       continue;
     }
+    /* moved only now, as whether it pointed outside pico-8 is a question about where it was */
+    if (shift != 0 && was >= image_lo - shift && was < image_hi - shift) {
+      was += shift;
+      moved++;
+    }
     memcpy((void *)at, &was, sizeof was);
+  }
+  if (shift != 0) {
+    LOG("pico-8 sits %#lx from where the state was saved, moved %zu pointers into it\n",
+        (unsigned long)shift, moved);
   }
   /* the bytes after the last whole word */
   memcpy((void *)(data_lo + offset), saved + offset, size - offset);
@@ -1212,7 +1222,7 @@ int state_load(const char *path, const char *cart, uint32_t *ticks)
   unsigned char *staged[2] = {NULL, NULL};
   size_t sizes[2];
   uint64_t count = 0, i;
-  uintptr_t end_now;
+  uintptr_t end_now, shift;
   FILE *file;
   int ok;
 
@@ -1253,15 +1263,13 @@ int state_load(const char *path, const char *cart, uint32_t *ticks)
   }
   if (ok) {
     end_now = arena_end();
-    if (header.data_lo != data_lo) {
-      uintptr_t shift = data_lo - (uintptr_t)header.data_lo;
-      size_t moved = rebase(staged[0], sizes[0], image_lo - shift, image_hi - shift, shift) +
-                     rebase(staged[1], sizes[1], image_lo - shift, image_hi - shift, shift);
+    shift = data_lo - (uintptr_t)header.data_lo;
+    if (shift != 0) {
+      size_t moved = rebase(staged[1], sizes[1], image_lo - shift, image_hi - shift, shift);
 
-      LOG("pico-8 sits %#lx from where the state was saved, moved %zu pointers into it\n",
-          (unsigned long)shift, moved);
+      LOG("moved %zu pointers into pico-8 in its heap\n", moved);
     }
-    put_back_data(staged[0], old_ranges, header.range_count, ranges, count);
+    put_back_data(staged[0], old_ranges, header.range_count, ranges, count, shift);
     memcpy(arena, staged[1], sizes[1]);
     /* what pico-8 had used past the state's end is free now, and zero as it was then */
     if (end_now > header.arena_end) {
