@@ -64,6 +64,10 @@ typedef struct {
 } SDL_Rect;
 
 #define SDL_PIXELFORMAT_ARGB8888 0x16362004
+#define SDL_PIXELFORMAT_XRGB8888 0x16161804
+#define SDL_PIXELFORMAT_ABGR8888 0x16762004
+#define SDL_PIXELFORMAT_XBGR8888 0x16561804
+#define SDL_PIXELFORMAT_RGB565 0x15151002
 #define SDL_TEXTUREACCESS_STREAMING 1
 #define SDL_AUDIO_PLAYING 1
 #define SDL_QUIT 0x100
@@ -132,6 +136,7 @@ static struct {
   int (*WaitEventTimeout)(void *, int);
   const uint8_t *(*GetKeyboardState)(int *);
   void (*PumpEvents)(void);
+  int (*QueryTexture)(void *, uint32_t *, int *, int *, int *);
 } sdl;
 
 static int is_pico8;
@@ -246,6 +251,7 @@ static int resolve_sdl(void)
   RESOLVE(WaitEventTimeout);
   RESOLVE(GetKeyboardState);
   RESOLVE(PumpEvents);
+  RESOLVE(QueryTexture);
 
   sdl.resolved = sdl.RenderPresent && sdl.GetTicks && sdl.PollEvent && sdl.PushEvent &&
                          sdl.GetRendererOutputSize && sdl.RenderReadPixels && sdl.CreateTexture &&
@@ -805,6 +811,112 @@ static void preview_from_frame(int which, const uint32_t *frame, int w, int h)
   }
 }
 
+/* ---- the game's own frame, where the screen cannot be read back ---- */
+
+/*
+ * The Miyoo Mini's SDL cannot read back what it drew, so there the frame pico-8
+ * uploads each time is kept instead, the biggest of them being the game, and
+ * the menu and the slots' pictures are drawn from that.
+ */
+static int readback_checked, copy_frames;
+static struct {
+  uint32_t *pixels;
+  int w, h;
+} game_frame;
+
+static void check_readback(void *renderer)
+{
+  uint32_t pixel;
+  SDL_Rect one = {0, 0, 1, 1};
+
+  readback_checked = 1;
+  if (sdl.RenderReadPixels(renderer, &one, SDL_PIXELFORMAT_ARGB8888, &pixel, sizeof pixel) != 0) {
+    copy_frames = sdl.QueryTexture != NULL;
+    LOG("this SDL cannot read the screen back, the menu draws from pico-8's own frame\n");
+  }
+}
+
+static void keep_frame(void *texture, const void *pixels, int pitch)
+{
+  uint32_t format;
+  int access, w, h, x, y;
+
+  if (sdl.QueryTexture(texture, &format, &access, &w, &h) != 0 || w <= 0 || h <= 0 ||
+      (game_frame.pixels != NULL && w * h < game_frame.w * game_frame.h)) {
+    return;
+  }
+  if (w != game_frame.w || h != game_frame.h) {
+    uint32_t *grown = realloc(game_frame.pixels, (size_t)w * h * sizeof *grown);
+
+    if (grown == NULL) {
+      return;
+    }
+    game_frame.pixels = grown;
+    game_frame.w = w;
+    game_frame.h = h;
+  }
+  for (y = 0; y < h; y++) {
+    const unsigned char *row = (const unsigned char *)pixels + (size_t)y * pitch;
+    uint32_t *to = game_frame.pixels + (size_t)y * w;
+
+    for (x = 0; x < w; x++) {
+      uint32_t p;
+
+      switch (format) {
+      case SDL_PIXELFORMAT_ABGR8888:
+      case SDL_PIXELFORMAT_XBGR8888:
+        memcpy(&p, row + x * 4, 4);
+        to[x] = (p & 0xFF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
+        break;
+      case SDL_PIXELFORMAT_RGB565: {
+        uint16_t q;
+
+        memcpy(&q, row + x * 2, 2);
+        to[x] = ((uint32_t)((q >> 11) * 255 / 31) << 16) | ((uint32_t)(((q >> 5) & 63) * 255 / 63) << 8) |
+                (uint32_t)((q & 31) * 255 / 31);
+        break;
+      }
+      default:
+        memcpy(&p, row + x * 4, 4);
+        to[x] = p;
+        break;
+      }
+      to[x] |= 0xFF000000u;
+    }
+  }
+}
+
+/* the kept frame scaled to fit the screen and centred, each of its pixels a block */
+static int draw_kept_frame(uint32_t *frame, int lw, int lh)
+{
+  int scale_w, scale_h, w, h, x0, y0, x, y;
+
+  if (game_frame.pixels == NULL) {
+    return 0;
+  }
+  memset(frame, 0, (size_t)lw * lh * sizeof *frame);
+  scale_w = lw * 1024 / game_frame.w;
+  scale_h = lh * 1024 / game_frame.h;
+  if (scale_h < scale_w) {
+    scale_w = scale_h;
+  }
+  w = game_frame.w * scale_w / 1024;
+  h = game_frame.h * scale_w / 1024;
+  x0 = (lw - w) / 2;
+  y0 = (lh - h) / 2;
+  for (y = 0; y < h; y++) {
+    const uint32_t *from = game_frame.pixels + (size_t)(y * game_frame.h / h) * game_frame.w;
+
+    for (x = 0; x < w; x++) {
+      frame[(y0 + y) * lw + x0 + x] = from[x * game_frame.w / w];
+    }
+  }
+  for (x = 0; x < lw * lh; x++) {
+    frame[x] |= 0xFF000000u;
+  }
+  return 1;
+}
+
 /* ---- the menu ---- */
 
 /*
@@ -838,8 +950,12 @@ static uint32_t *read_frame(void *renderer, uint32_t **out, int *ow, int *oh, in
     *out = NULL;
     return NULL;
   }
-  if (sdl.RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, *out,
-                           *ow * (int)sizeof **out) != 0) {
+  if (copy_frames || sdl.RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, *out,
+                                           *ow * (int)sizeof **out) != 0) {
+    if (draw_kept_frame(frame, *lw, *lh)) {
+      land_to_out_pixels(frame, *lw, *lh, *out, *ow);
+      return frame;
+    }
     LOG("cannot read the game's frame: %s\n", sdl.GetError ? sdl.GetError() : "");
     memset(*out, 0, (size_t)*ow * *oh * sizeof **out);
   }
@@ -1242,6 +1358,9 @@ EXPORT void SDL_RenderPresent(void *renderer)
   if (!frames_seen++) {
     take_crash_signals();
   }
+  if (!readback_checked) {
+    check_readback(renderer);
+  }
   state_frame();
   if (resume()) {
     clear_to_black(renderer);
@@ -1400,6 +1519,19 @@ EXPORT uint32_t SDL_GetTicks(void)
 {
   resolve_sdl();
   return sdl.GetTicks != NULL ? sdl.GetTicks() + (uint32_t)tick_offset : 0;
+}
+
+/* pico-8 uploads its whole frame each time, kept where the screen cannot be read back */
+EXPORT int SDL_UpdateTexture(void *texture, const SDL_Rect *rect, const void *pixels, int pitch)
+{
+  resolve_sdl();
+  if (sdl.UpdateTexture == NULL) {
+    return -1;
+  }
+  if (copy_frames && is_pico8 && rect == NULL && pixels != NULL && texture != NULL) {
+    keep_frame(texture, pixels, pitch);
+  }
+  return sdl.UpdateTexture(texture, rect, pixels, pitch);
 }
 
 /* pico-8 reads Ctrl from here, for the Ctrl+R that resets the cart */
