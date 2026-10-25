@@ -3,7 +3,8 @@
  *
  * From josegonzalez/minui-pico-8-pak. Changed for spruce: a load unpacks the
  * file a chunk at a time, as a whole file's pages at once did not fit in the
- * Miyoo Mini's memory, and keeps this run's settings and screen setup, so one
+ * Miyoo Mini's memory, keeps this run's settings and screen setup, and moves
+ * pointers into a position-independent pico-8 to where it sits now, so one
  * card's states load on any device running the same pico-8.
  */
 
@@ -965,8 +966,9 @@ static int header_matches(const struct state_header *header, const char *path, c
   } else if (header->build_id_size != build_id_size ||
              memcmp(header->build_id, build_id, build_id_size) != 0) {
     why = "was saved by another build of pico-8";
-  } else if (header->data_lo != data_lo || header->data_hi != data_hi ||
-             header->arena != (uintptr_t)arena) {
+  } else if (header->data_hi - header->data_lo != data_hi - data_lo ||
+             header->arena != (uintptr_t)arena ||
+             (header->data_lo != data_lo && !position_independent)) {
     why = "was saved with pico-8 at another address";
   } else if (header->arena_end <= header->arena || header->arena_end > header->arena + ARENA_SIZE ||
              header->range_count > 1u << 20 || header->kept_count > BIG_BLOCKS) {
@@ -1143,6 +1145,30 @@ static int read_pages(FILE *file, const struct state_header *header, unsigned ch
 }
 
 /*
+ * A position-independent pico-8 sits wherever each kernel puts it, so a state
+ * from another device holds pointers into its image at the old address, which
+ * are moved to where it is now. A number that only looks like such a pointer
+ * would be moved too, but in 64 bits nothing else falls in that range.
+ */
+static size_t rebase(unsigned char *at, size_t size, uintptr_t old_lo, uintptr_t old_hi,
+                     uintptr_t shift)
+{
+  size_t offset, moved = 0;
+
+  for (offset = 0; offset + sizeof(uintptr_t) <= size; offset += sizeof(uintptr_t)) {
+    uintptr_t word;
+
+    memcpy(&word, at + offset, sizeof word);
+    if (word >= old_lo && word < old_hi) {
+      word += shift;
+      memcpy(at + offset, &word, sizeof word);
+      moved++;
+    }
+  }
+  return moved;
+}
+
+/*
  * A word that pointed outside pico-8 when the state was saved keeps the value
  * it has now, unless what is there now is not such a pointer, which makes the
  * saved one only a number that happened to look like one.
@@ -1227,6 +1253,14 @@ int state_load(const char *path, const char *cart, uint32_t *ticks)
   }
   if (ok) {
     end_now = arena_end();
+    if (header.data_lo != data_lo) {
+      uintptr_t shift = data_lo - (uintptr_t)header.data_lo;
+      size_t moved = rebase(staged[0], sizes[0], image_lo - shift, image_hi - shift, shift) +
+                     rebase(staged[1], sizes[1], image_lo - shift, image_hi - shift, shift);
+
+      LOG("pico-8 sits %#lx from where the state was saved, moved %zu pointers into it\n",
+          (unsigned long)shift, moved);
+    }
     put_back_data(staged[0], old_ranges, header.range_count, ranges, count);
     memcpy(arena, staged[1], sizes[1]);
     /* what pico-8 had used past the state's end is free now, and zero as it was then */
