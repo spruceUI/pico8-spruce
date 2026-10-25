@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    # glibc 2.31, so nothing is linked against a version newer than aarch64's base 2.17
+    container: debian:bullseye
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross compiler
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils
+      - name: Build
+        run: ./build.sh aarch64-linux-gnu-gcc out/pico8-igm-arm64.so 2.17
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64
+          path: out/pico8-igm-arm64.so
+
+  armhf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # glibc 2.23, the A30's; the Miyoo Mini's is newer and loads the same build
+      - name: Install A30 toolchain
+        run: |
+          curl -fsSL -o /tmp/a30.tar.gz https://github.com/steward-fu/website/releases/download/miyoo-a30/a30_toolchain-v1.0.tar.gz
+          sudo tar xzf /tmp/a30.tar.gz -C /opt
+          cd /opt/a30/arm-a30-linux-gnueabihf/sysroot/lib
+          for l in ld-linux-armhf.so.3:ld-2.23.so libc.so.6:libc-2.23.so libpthread.so.0:libpthread-2.23.so \
+              libdl.so.2:libdl-2.23.so libm.so.6:libm-2.23.so librt.so.1:librt-2.23.so; do
+            sudo ln -sf "${l#*:}" "${l%%:*}"
+          done
+          printf '#!/bin/sh\nexec /opt/a30/bin/arm-a30-linux-gnueabihf-gcc-13.2.0.br_real --sysroot=/opt/a30/arm-a30-linux-gnueabihf/sysroot "$@"\n' | sudo tee /usr/local/bin/a30-gcc
+          sudo chmod +x /usr/local/bin/a30-gcc
+      - name: Build
+        run: ./build.sh a30-gcc out/pico8-igm-armhf.so 2.23
+      - uses: actions/upload-artifact@v4
+        with:
+          name: armhf
+          path: out/pico8-igm-armhf.so
+
+  release:
+    needs: [arm64, armhf]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish beta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view beta >/dev/null 2>&1 || \
+            gh release create beta --prerelease --title "Beta" --notes "Built from the latest main."
+          gh release upload beta out/pico8-igm-arm64.so out/pico8-igm-armhf.so --clobber
+          gh release edit beta --notes "Built from ${GITHUB_SHA}."
