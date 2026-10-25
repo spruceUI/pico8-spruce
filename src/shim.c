@@ -129,6 +129,7 @@ static struct {
   int (*WaitEvent)(void *);
   int (*WaitEventTimeout)(void *, int);
   const uint8_t *(*GetKeyboardState)(int *);
+  void (*PumpEvents)(void);
 } sdl;
 
 static int is_pico8;
@@ -240,6 +241,7 @@ static int resolve_sdl(void)
   RESOLVE(WaitEvent);
   RESOLVE(WaitEventTimeout);
   RESOLVE(GetKeyboardState);
+  RESOLVE(PumpEvents);
 
   sdl.resolved = sdl.RenderPresent && sdl.GetTicks && sdl.PollEvent && sdl.PushEvent &&
                          sdl.GetRendererOutputSize && sdl.RenderReadPixels && sdl.CreateTexture &&
@@ -1187,6 +1189,7 @@ EXPORT void SDL_RenderPresent(void *renderer)
   }
 
   continue_keys();
+  release_hidden_key();
   debug_keyboard_state();
   if (menu_requests != menu_seen) {
     debug("menu requested\n");
@@ -1197,6 +1200,24 @@ EXPORT void SDL_RenderPresent(void *renderer)
     }
   }
   sdl.RenderPresent(renderer);
+}
+
+/*
+ * pico-8 also polls the table SDL_GetKeyboardState hands it, so the key is
+ * let go there each time SDL reads the keyboard. SDL then drops its release.
+ */
+static void release_hidden_key(void)
+{
+  uint8_t *state;
+  int count = 0;
+
+  if (hidden_scancode < 0 || sdl.GetKeyboardState == NULL) {
+    return;
+  }
+  state = (uint8_t *)sdl.GetKeyboardState(&count);
+  if (state != NULL && hidden_scancode < count) {
+    state[hidden_scancode] = 0;
+  }
 }
 
 static int is_hidden_key(const void *event)
@@ -1225,6 +1246,7 @@ EXPORT int SDL_PollEvent(void *event)
   }
   for (;;) {
     got = sdl.PollEvent(event);
+    release_hidden_key();
     if (!got) {
       return 0;
     }
@@ -1252,6 +1274,7 @@ EXPORT int SDL_WaitEvent(void *event)
 
   resolve_sdl();
   got = sdl.WaitEvent != NULL ? sdl.WaitEvent(event) : 0;
+  release_hidden_key();
   if (got && event != NULL) {
     debug_key_event("WaitEvent", event, 0);
   }
@@ -1264,10 +1287,20 @@ EXPORT int SDL_WaitEventTimeout(void *event, int timeout)
 
   resolve_sdl();
   got = sdl.WaitEventTimeout != NULL ? sdl.WaitEventTimeout(event, timeout) : 0;
+  release_hidden_key();
   if (got && event != NULL) {
     debug_key_event("WaitEventTimeout", event, 0);
   }
   return got;
+}
+
+EXPORT void SDL_PumpEvents(void)
+{
+  resolve_sdl();
+  if (sdl.PumpEvents != NULL) {
+    sdl.PumpEvents();
+  }
+  release_hidden_key();
 }
 
 EXPORT const uint8_t *SDL_GetKeyboardState(int *count)
