@@ -109,9 +109,10 @@ struct range {
 };
 
 /*
- * pico-8's settings, screen setup, controllers and keys, which stay this run's
- * through a load, so a state saved on one device puts the game back on another
- * without its screen or pad.
+ * pico-8's settings, screen setup, controllers, keys and CPU-time timers,
+ * which stay this run's through a load, so a state saved on one device puts the
+ * game back on another without its screen or pad, and the timers read this
+ * run's clock.
  * A part of a symbol is its offsets from lo up to hi; hi 0 is the whole symbol.
  * app's are the words pico8_load_config and pico8_save_config read and write,
  * transform_screen among them at 0x538, the same in pico8_dyn and pico8_64.
@@ -127,7 +128,8 @@ static const struct {
     {"last_fullscreen", 0, 0},  {"sdl_window_display", 0, 0}, {"last_win_x", 0, 0},
     {"last_win_y", 0, 0},       {"metacon", 0, 0},       {"codo_joystick_inited", 0, 0},
     {"controller_db_mapping", 0, 0}, {"decode_mapping", 0, 0}, {"codokey", 0, 0},
-    {"last_codokey", 0, 0},     {"block_codokey", 0, 0},
+    {"last_codokey", 0, 0},     {"block_codokey", 0, 0},  {"codo_timer_t0", 0, 0},
+    {"start_time", 0, 0},
     {"app", 0x518, 0x524},      {"app", 0x534, 0x554},   {"app", 0x558, 0x55c},
     {"app", 0x564, 0x568},      {"app", 0x65c, 0x674},   {"app", 0x678, 0x684},
     {"app", 0x688, 0x690},      {"app", 0x694, 0x698},   {"app", 0x69c, 0x6a0},
