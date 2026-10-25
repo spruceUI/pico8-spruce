@@ -11,6 +11,7 @@ A library preloaded into native PICO-8 on spruceOS that adds the spruce in-game 
 |---|---|
 | `PICO_PAK_STATES_DIR` | where states go; unset turns states off (Splore) |
 | `PICO8_IGM_CART` | the cart being run, for state names |
+| `PICO8_IGM_STATE_KEY` | the screen setup a state is checked against before it loads |
 | `EVENT_PATH_READ_INPUTS_SPRUCE`, `B_UP` ... `B_B` | the pad, as the platform `.cfg` exports them |
 | `PICO8_IGM_INPUT`, `PICO8_IGM_B_*` | override the two above |
 | `PICO8_IGM_HIDE_SCANCODE` | an SDL scancode kept from pico-8, for a Menu button its SDL sends as a key |
