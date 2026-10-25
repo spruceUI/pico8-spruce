@@ -135,6 +135,7 @@ static struct {
 } sdl;
 
 static int is_pico8;
+static unsigned frames_seen;
 /* a key pico-8 must not see, the Mini's Menu, which its SDL sends as Escape */
 static int hidden_scancode = -1;
 static void release_hidden_key(void);
@@ -1046,6 +1047,8 @@ static void run_menu(void *renderer)
 /* where pico-8's image starts, so a crash is logged at offsets that match its symbols */
 static uintptr_t pico8_base;
 
+static const int crash_signals[] = {SIGSEGV, SIGBUS, SIGILL};
+
 static int first_object(struct dl_phdr_info *info, size_t size, void *data)
 {
   (void)size;
@@ -1054,8 +1057,12 @@ static int first_object(struct dl_phdr_info *info, size_t size, void *data)
   return 1;
 }
 
-/* logs where pico-8 crashed and lets it crash as it would have, the handler being reset */
-static void on_crash(int signal, siginfo_t *info, void *context)
+/*
+ * Logs where pico-8 crashed and puts the default action back, so the fault
+ * happens again on return and ends pico-8 as it would have. A si_code of 0 or
+ * less is a signal some code sent, not a fault.
+ */
+static void on_crash(int sig, siginfo_t *info, void *context)
 {
   ucontext_t *uc = context;
   uintptr_t pc, lr;
@@ -1073,8 +1080,8 @@ static void on_crash(int signal, siginfo_t *info, void *context)
   (void)uc;
 #endif
   n = snprintf(line, sizeof line,
-               "pico8-igm: signal %d at address %p, pc %#lx (pico-8 +%#lx), lr %#lx (pico-8 +%#lx)\n",
-               signal, info->si_addr, (unsigned long)pc, (unsigned long)(pc - pico8_base),
+               "pico8-igm: signal %d code %d at address %p, pc %#lx (pico-8 +%#lx), lr %#lx (pico-8 +%#lx)\n",
+               sig, info->si_code, info->si_addr, (unsigned long)pc, (unsigned long)(pc - pico8_base),
                (unsigned long)lr, (unsigned long)(lr - pico8_base));
   if (n > 0) {
     ssize_t written = write(2, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
@@ -1083,6 +1090,25 @@ static void on_crash(int signal, siginfo_t *info, void *context)
   if (debug_log != NULL) {
     fputs(line, debug_log);
     fflush(debug_log);
+  }
+  signal(sig, SIG_DFL);
+}
+
+/*
+ * Taken at startup and again on the first frame, as SDL and the GPU drivers
+ * may install handlers of their own in between, which would hide the fault
+ */
+static void take_crash_signals(void)
+{
+  struct sigaction action;
+  size_t i;
+
+  memset(&action, 0, sizeof action);
+  sigemptyset(&action.sa_mask);
+  action.sa_sigaction = on_crash;
+  action.sa_flags = SA_SIGINFO;
+  for (i = 0; i < sizeof crash_signals / sizeof *crash_signals; i++) {
+    sigaction(crash_signals[i], &action, NULL);
   }
 }
 
@@ -1127,12 +1153,7 @@ __attribute__((constructor)) static void shim_init(void)
   sigaction(SIGTERM, &action, NULL);
 
   dl_iterate_phdr(first_object, NULL);
-  action.sa_handler = NULL;
-  action.sa_sigaction = on_crash;
-  action.sa_flags = SA_SIGINFO | SA_RESETHAND;
-  sigaction(SIGSEGV, &action, NULL);
-  sigaction(SIGBUS, &action, NULL);
-  sigaction(SIGILL, &action, NULL);
+  take_crash_signals();
 
   if (getenv("PICO8_IGM_HIDE_SCANCODE") != NULL) {
     hidden_scancode = atoi(getenv("PICO8_IGM_HIDE_SCANCODE"));
@@ -1218,6 +1239,9 @@ EXPORT void SDL_RenderPresent(void *renderer)
     return;
   }
 
+  if (!frames_seen++) {
+    take_crash_signals();
+  }
   state_frame();
   if (resume()) {
     clear_to_black(renderer);
