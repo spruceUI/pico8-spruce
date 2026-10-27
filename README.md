@@ -5,6 +5,8 @@ A library preloaded into native PICO-8 on spruceOS that adds the spruce in-game 
 - Menu: tap Menu. spruce's menu button watchdog sends `SIGUSR2`, and the menu opens over the next frame.
 - Save states: `src/state.c` from [josegonzalez/minui-pico-8-pak](https://github.com/josegonzalez/minui-pico-8-pak) (MIT, see `src/LICENSE.state`), changed to unpack a state a chunk at a time on load, which the Miyoo Mini needs, to keep the device's own settings and screen setup through a load, and to move pointers into `pico8_64` to wherever that device's kernel put it, so states move between devices running the same pico-8. States go to `PICO_PAK_STATES_DIR` and are named the way RetroArch names its own. The auto slot is saved on Exit Game and on SIGTERM, and loaded the next time the cart starts.
 
+`pcmreopen/` is a separate library for the A30 that brings sound back after sleep; see its README.
+
 ## Environment
 
 | variable | |
